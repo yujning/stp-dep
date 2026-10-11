@@ -7,7 +7,6 @@
 #include <cstdint>
 #include <iostream>
 #include <unordered_set>
-#include "config.hpp"
 
 namespace stp::lutxx {
 
@@ -55,7 +54,6 @@ struct Lut66DsdResult {
     // optional debug
     std::string block0;
     std::string block1;
-    std::string reordered_tt;  // concatenated blocks by My assignment (My|Mx)
 };
 
 // =====================================================
@@ -96,17 +94,18 @@ inline std::string extract_block_for_mx_66(
     const size_t sub_size = 1ull << k;
     std::string sub(sub_size, '0');
 
-    for (size_t mx_index = 0; mx_index < sub_size; ++mx_index)
-    {
-        uint64_t full_index = 0;
-
+    uint64_t fixed_index = 0;
         // 1) place My bits (MSB->LSB)
         for (int t = 0; t < m; ++t)
         {
             int pos = my_pos_sorted[t];
             int bit = (int)((my_assignment >> (m - 1 - t)) & 1ull);
-            full_index |= (uint64_t(bit) << (n - 1 - pos));
+            fixed_index |= (uint64_t(bit) << (n - 1 - pos));
         }
+
+    for (size_t mx_index = 0; mx_index < sub_size; ++mx_index)
+    {
+        uint64_t full_index = fixed_index;
 
         // 2) place Mx bits (MSB->LSB)
         for (int t = 0; t < k; ++t)
@@ -220,24 +219,6 @@ inline Lut66DsdResult run_66lut_dsd_by_mx_subset(
             uint64_t my_count = 1ull << m;
             uint64_t L = 1ull << k;
 
-            if (LUT66_DSD_DEBUG_PRINT)
-            {
-                std::string reordered;
-                reordered.reserve((size_t)my_count * (size_t)L);
-
-                for (uint64_t y = 0; y < my_count; ++y) {
-                    std::string block = extract_block_for_mx_66(mf, n, mx_pos, my_pos, y);
-                    reordered += block;
-                }
-
-                std::vector<int> reordered_order;
-                reordered_order.reserve(n);
-                reordered_order.insert(reordered_order.end(), my_vars_msb2lsb.begin(), my_vars_msb2lsb.end());
-                reordered_order.insert(reordered_order.end(), mx_vars_msb2lsb.begin(), mx_vars_msb2lsb.end());
-
-                print_tt_with_order_66("候选 split 的重排 TT (My|Mx)", reordered, reordered_order, depth_for_print);
-            }
-
             std::unordered_map<std::string, int> block_index;
             std::vector<std::string> blocks;
             blocks.reserve(2);
@@ -251,6 +232,8 @@ inline Lut66DsdResult run_66lut_dsd_by_mx_subset(
             {
                 std::string block = extract_block_for_mx_66(mf, n, mx_pos, my_pos, y);
 
+                print_tt_with_order_66("Candidate cofactor", block,
+                                       mx_vars_msb2lsb, depth_for_print);
                 auto it = block_index.find(block);
                 if (it == block_index.end())
                 {
@@ -280,15 +263,6 @@ inline Lut66DsdResult run_66lut_dsd_by_mx_subset(
 
                 out.block0 = blocks[0];
                 out.block1 = blocks[1];
-
-                // reordered_tt (My|Mx)
-                std::string reordered;
-                reordered.reserve((size_t)my_count * (size_t)L);
-                for (uint64_t y = 0; y < my_count; ++y) {
-                    std::string block = extract_block_for_mx_66(mf, n, mx_pos, my_pos, y);
-                    reordered += block;
-                }
-                out.reordered_tt = reordered;
 
                 if (LUT66_DSD_DEBUG_PRINT)
                 {

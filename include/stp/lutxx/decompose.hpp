@@ -1,6 +1,14 @@
 #pragma once
-#include "66lut_bidec.hpp"
-#include "66lut_dsd.hpp"
+#include <fstream>
+#include <cctype>
+
+namespace stp::lutxx {
+inline int LUT_PAIR_FANIN_LIMIT = 6;
+inline int mx_lut_fanin_limit() { return LUT_PAIR_FANIN_LIMIT - 1; }
+}
+
+#include "lut_pair_bidec.hpp"
+#include "lut_pair_dsd.hpp"
 #include <stdexcept>
 
 namespace stp::lutxx {
@@ -65,13 +73,8 @@ inline Result decompose(const std::string &bits, int k) {
   }
   for (auto [x,y,z] : enumerate_xyz(static_cast<int>(order.size()))) {
     for (const auto &[a,b,c] : enumerate_variable_partitions(order,x,y,z)) {
-      auto reordered = a;
-      reordered.insert(reordered.end(),b.begin(),b.end());
-      reordered.insert(reordered.end(),c.begin(),c.end());
-      auto mf = reorder_tt_by_var_order(table, static_cast<int>(order.size()), reordered, order);
-      auto mxy = compute_MXYX_from_MF(mf,x,y,z);
       std::string mx, symbolic, my;
-      if (!solve_MX_MY_from_MXY(mxy,x,y,z,mx,symbolic,my)) continue;
+      if (!solve_MX_MY_from_cofactors(table,order,a,b,c,mx,symbolic,my)) continue;
       auto my_order = a;
       my_order.insert(my_order.end(),b.begin(),b.end());
       std::vector<int> mx_order{0};
@@ -85,3 +88,72 @@ inline Result decompose(const std::string &bits, int k) {
   return {};
 }
 }
+
+namespace stp::lutxx {
+inline std::string to_hex(const std::string& bits) {
+  if (bits.empty() || bits.find_first_not_of("01") != std::string::npos)
+    throw std::invalid_argument("BENCH LUT must contain binary values");
+  std::string padded((4 - bits.size() % 4) % 4, '0');
+  padded += bits;
+  std::string hex = "0x";
+  for (size_t i = 0; i < padded.size(); i += 4) {
+    unsigned value = 0;
+    for (size_t j = 0; j < 4; ++j) value = value * 2 + (padded[i+j] - '0');
+    hex += "0123456789abcdef"[value];
+  }
+  return hex;
+}
+
+inline void write_bench(const Result& result, unsigned variable_count,
+                        const std::string& filename,
+                        const std::string& output_name = "po") {
+  if (!result.found) throw std::invalid_argument("no decomposition to export");
+  if (variable_count > 20) throw std::invalid_argument("too many BENCH inputs");
+  if (output_name.empty() ||
+      !(std::isalpha(static_cast<unsigned char>(output_name[0])) || output_name[0] == '_'))
+    throw std::invalid_argument("invalid output name");
+  for (unsigned char c : output_name)
+    if (!(std::isalnum(c) || c == '_')) throw std::invalid_argument("invalid output name");
+  // Constant LUTs use one ignored input for compatibility with the LUT reader.
+  const unsigned input_count = std::max(1u, variable_count);
+  for (unsigned i = 1; i <= input_count; ++i)
+    if (output_name == "x" + std::to_string(i))
+      throw std::invalid_argument("output name conflicts with an input");
+  auto validate = [&](const std::string& bits, const std::vector<int>& vars, bool outer) {
+    if (vars.size() > 20 || bits.size() != (size_t{1} << vars.size()) ||
+        bits.find_first_not_of("01") != std::string::npos)
+      throw std::invalid_argument("invalid BENCH LUT table");
+    for (size_t i = 0; i < vars.size(); ++i) {
+      int v = vars[i];
+      if (v < 0 || static_cast<unsigned>(v) > variable_count ||
+          (v == 0 && (!outer || result.my.empty())) ||
+          std::find(vars.begin(), vars.begin()+i, v) != vars.begin()+i)
+        throw std::invalid_argument("invalid BENCH LUT input");
+    }
+  };
+  if (!result.my.empty()) validate(result.my, result.my_vars, false);
+  validate(result.mx, result.mx_vars, true);
+  std::string inner_name = "lutxx_n0";
+  if (inner_name == output_name) inner_name += "_";
+  std::ofstream stream(filename);
+  if (!stream) throw std::runtime_error("cannot write bench file " + filename);
+  for (unsigned i = 1; i <= input_count; ++i)
+    stream << "INPUT(x" << i << ")\n";
+  stream << "OUTPUT(" << output_name << ")\n\n";
+  auto emit = [&](const std::string& name, const std::string& bits,
+                  const std::vector<int>& vars) {
+    stream << name << " = LUT " << to_hex(vars.empty() ? bits + bits : bits) << " (";
+    // The project LUT reader reverses BENCH inputs; emit LSB-to-MSB order.
+    if (vars.empty()) stream << "x1";
+    for (size_t i = vars.size(); i-- > 0;) {
+      if (i + 1 != vars.size()) stream << ", ";
+      stream << (vars[i] == 0 ? inner_name : "x" + std::to_string(vars[i]));
+    }
+    stream << ")\n";
+  };
+  if (!result.my.empty()) emit(inner_name, result.my, result.my_vars);
+  emit(output_name, result.mx, result.mx_vars);
+  stream.close();
+  if (!stream) throw std::runtime_error("cannot write bench file " + filename);
+}
+} // namespace stp::lutxx
